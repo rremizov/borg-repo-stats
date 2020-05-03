@@ -3,6 +3,11 @@ borg-repo-stats
 
 Show statistics about Borg Backup repository.
 
+Features
+--------
+
+- Print human-readable text or JSON.
+
 Requirements
 ------------
 

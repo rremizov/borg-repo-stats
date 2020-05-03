@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/SimonBaeumer/cmd"
@@ -100,10 +101,14 @@ func action(context *cli.Context) error {
 
 	report := newReport(repositoryName, *repositoryInfo, *archiveInfo, aggregateStats(archiveList))
 
-	if context.Bool("json") {
-		printJsonReport(report)
-	} else {
+	if !context.Bool("json") {
 		printTextReport(report)
+		return nil
+	}
+
+	err = printJsonReport(report)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -308,6 +313,11 @@ func printTextReport(report Report) {
 	}
 }
 
-func printJsonReport(report Report) {
-	// TODO
+func printJsonReport(report Report) error {
+	b, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
 }
