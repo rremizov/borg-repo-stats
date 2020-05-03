@@ -34,6 +34,25 @@ type BorgArchiveStats struct {
 	FilesCountByDir map[string]int64
 }
 
+type DirectoryFilesCount struct {
+	Path  string
+	Count int64
+}
+
+type DirectorySizeBytes struct {
+	Path      string
+	SizeBytes uint64
+}
+
+type Report struct {
+	RepositoryName               string
+	TotalSizeBytes               uint64
+	LatestArchiveName            string
+	LatestArchiveCreatedAt       time.Time
+	LatestArchiveSizeBytesByDir  []DirectorySizeBytes
+	LatestArchiveFilesCountByDir []DirectoryFilesCount
+}
+
 func init() {
 	log.SetFormatter(&log.TextFormatter{})
 	log.SetLevel(log.DebugLevel)
@@ -46,6 +65,12 @@ func main() {
 		Usage:     "Print statistics about Borg Backup repository",
 		ArgsUsage: "path-to-borg-repository",
 		Action:    action,
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "json",
+				Usage: "Output JSON",
+			},
+		},
 	}
 
 	err := app.Run(os.Args)
@@ -58,27 +83,33 @@ func action(context *cli.Context) error {
 	repositoryPath := context.Args().Get(0)
 	repositoryName := filepath.Base(repositoryPath)
 
-	repositoryInfo, err := NewRepositoryInfo(repositoryPath)
+	repositoryInfo, err := newRepositoryInfo(repositoryPath)
 	if err != nil {
 		return err
 	}
 
-	archiveInfo, err := NewArchiveInfo(repositoryPath)
+	archiveInfo, err := newArchiveInfo(repositoryPath)
 	if err != nil {
 		return err
 	}
 
-	archiveList, err := NewArchiveList(repositoryPath, *archiveInfo)
+	archiveList, err := newArchiveList(repositoryPath, *archiveInfo)
 	if err != nil {
 		return err
 	}
 
-	printSummary(repositoryName, *repositoryInfo, *archiveInfo, aggregateStats(archiveList))
+	report := newReport(repositoryName, *repositoryInfo, *archiveInfo, aggregateStats(archiveList))
+
+	if context.Bool("json") {
+		printJsonReport(report)
+	} else {
+		printTextReport(report)
+	}
 
 	return nil
 }
 
-func NewRepositoryInfo(repositoryPath string) (*BorgRepositoryInfo, error) {
+func newRepositoryInfo(repositoryPath string) (*BorgRepositoryInfo, error) {
 	command := cmd.NewCommand(fmt.Sprintf("borg info %q --json", repositoryPath))
 
 	err := command.Execute()
@@ -106,7 +137,7 @@ func NewRepositoryInfo(repositoryPath string) (*BorgRepositoryInfo, error) {
 	return &repositoryInfo, nil
 }
 
-func NewArchiveInfo(repositoryPath string) (*BorgArchiveInfo, error) {
+func newArchiveInfo(repositoryPath string) (*BorgArchiveInfo, error) {
 	command := cmd.NewCommand(fmt.Sprintf("borg info %q --last 1 --json", repositoryPath))
 
 	err := command.Execute()
@@ -144,7 +175,7 @@ func NewArchiveInfo(repositoryPath string) (*BorgArchiveInfo, error) {
 	return &archiveInfo, nil
 }
 
-func NewArchiveList(repositoryPath string, archiveInfo BorgArchiveInfo) ([]BorgArchiveFile, error) {
+func newArchiveList(repositoryPath string, archiveInfo BorgArchiveInfo) ([]BorgArchiveFile, error) {
 	command := cmd.NewCommand(fmt.Sprintf("borg list %q::%q --json-lines", repositoryPath, archiveInfo.Name))
 
 	err := command.Execute()
@@ -202,6 +233,38 @@ func NewArchiveList(repositoryPath string, archiveInfo BorgArchiveInfo) ([]BorgA
 	return files, nil
 }
 
+func newReport(repositoryName string, repositoryInfo BorgRepositoryInfo, latestArchiveInfo BorgArchiveInfo, stats BorgArchiveStats) Report {
+	report := Report{
+		RepositoryName:         repositoryName,
+		TotalSizeBytes:         repositoryInfo.SizeBytes,
+		LatestArchiveName:      latestArchiveInfo.Name,
+		LatestArchiveCreatedAt: latestArchiveInfo.CreatedAt,
+	}
+
+	var sizeBytesByDir []DirectorySizeBytes
+	var filesCountByDir []DirectoryFilesCount
+	for path, count := range stats.FilesCountByDir {
+		sizeBytesByDir = append(sizeBytesByDir, DirectorySizeBytes{Path: path, SizeBytes: stats.SizeBytesByDir[path]})
+		filesCountByDir = append(filesCountByDir, DirectoryFilesCount{Path: path, Count: count})
+	}
+
+	sort.Slice(sizeBytesByDir, func(i, j int) bool {
+		return sizeBytesByDir[i].SizeBytes > sizeBytesByDir[j].SizeBytes
+	})
+	sort.Slice(filesCountByDir, func(i, j int) bool {
+		if filesCountByDir[i].Count == filesCountByDir[j].Count {
+			return len(filesCountByDir[i].Path) < len(filesCountByDir[j].Path)
+		}
+
+		return filesCountByDir[i].Count > filesCountByDir[j].Count
+	})
+
+	report.LatestArchiveFilesCountByDir = filesCountByDir
+	report.LatestArchiveSizeBytesByDir = sizeBytesByDir
+
+	return report
+}
+
 func aggregateStats(filesList []BorgArchiveFile) BorgArchiveStats {
 	var counts map[string]int64
 	var sizeBytesByDir map[string]uint64
@@ -226,36 +289,25 @@ func aggregateStats(filesList []BorgArchiveFile) BorgArchiveStats {
 	}
 }
 
-func printSummary(
-	repositoryName string,
-	repositoryInfo BorgRepositoryInfo,
-	info BorgArchiveInfo,
-	stats BorgArchiveStats,
-) {
-	fmt.Printf("Repository: %s\n", repositoryName)
-	fmt.Printf("Total size: %s\n", humanize.Bytes(repositoryInfo.SizeBytes))
-	fmt.Printf("Archive: %s\n", info.Name)
-	fmt.Printf("Created at: %s\n", humanize.Time(info.CreatedAt))
+func printTextReport(report Report) {
+	fmt.Printf("Repository: %s\n", report.RepositoryName)
+	fmt.Printf("Total size: %s\n", humanize.Bytes(report.TotalSizeBytes))
+	fmt.Printf("Latest archive name: %s\n", report.LatestArchiveName)
+	fmt.Printf("Latest archive created at: %s\n", humanize.Time(report.LatestArchiveCreatedAt))
+
 	fmt.Println()
-	fmt.Println("Files by directory (the last archive only):")
+	fmt.Println("Files count by directory (the last archive only):")
+	for _, entry := range report.LatestArchiveFilesCountByDir[:10] {
+		fmt.Printf("%s: %d files\n", entry.Path, entry.Count)
+	}
 
-	type Entry struct {
-		Path      string
-		Count     int64
-		SizeBytes uint64
+	fmt.Println()
+	fmt.Println("Size by directory (the last archive only):")
+	for _, entry := range report.LatestArchiveSizeBytesByDir[:10] {
+		fmt.Printf("%s: %s\n", entry.Path, humanize.Bytes(entry.SizeBytes))
 	}
-	var entries []Entry
-	for path, count := range stats.FilesCountByDir {
-		entries = append(entries, Entry{Path: path, Count: count, SizeBytes: stats.SizeBytesByDir[path]})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].Count == entries[j].Count {
-			return len(entries[i].Path) < len(entries[j].Path)
-		}
-		return entries[i].Count > entries[j].Count
-	})
+}
 
-	for _, entry := range entries[:10] {
-		fmt.Printf("%s: %d files, %s\n", entry.Path, entry.Count, humanize.Bytes(entry.SizeBytes))
-	}
+func printJsonReport(report Report) {
+	// TODO
 }
