@@ -13,8 +13,10 @@ Installation
 
 .. code:: sh
 
-    # TODO
-
+    $ base=https://github.com/rremizov/borg-repo-stats/releases/latest/download/ &&
+      curl -L $base/borg-repo-stats.$(uname -s)-$(uname -m) > /tmp/borg-repo-stats &&
+      sudo mv /tmp/borg-repo-stats /usr/local/bin/borg-repo-stats &&
+      chmod +x /usr/local/bin/borg-repo-stats
 
 Usage
 -----
