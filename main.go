@@ -45,11 +45,15 @@ type DirectorySizeBytes struct {
 	SizeBytes uint64
 }
 
-type Report struct {
-	RepositoryName               string
-	TotalSizeBytes               uint64
-	LatestArchiveName            string
-	LatestArchiveCreatedAt       time.Time
+type ShortReport struct {
+	RepositoryName         string
+	TotalSizeBytes         uint64
+	LatestArchiveName      string
+	LatestArchiveCreatedAt time.Time
+}
+
+type LongReport struct {
+	ShortReport
 	LatestArchiveSizeBytesByDir  []DirectorySizeBytes
 	LatestArchiveFilesCountByDir []DirectoryFilesCount
 }
@@ -70,6 +74,10 @@ func main() {
 			&cli.BoolFlag{
 				Name:  "json",
 				Usage: "Output JSON",
+			},
+			&cli.BoolFlag{
+				Name:  "short",
+				Usage: "Do not count \"by directory\" statistics (to speed things up)",
 			},
 		},
 	}
@@ -94,21 +102,37 @@ func action(context *cli.Context) error {
 		return err
 	}
 
-	archiveList, err := newArchiveList(repositoryPath, *archiveInfo)
-	if err != nil {
-		return err
-	}
+	if context.Bool("short") {
+		report := newShortReport(repositoryName, *repositoryInfo, *archiveInfo)
 
-	report := newReport(repositoryName, *repositoryInfo, *archiveInfo, aggregateStats(archiveList))
+		if context.Bool("json") {
+			err = printShortJsonReport(report)
+			if err != nil {
+				return err
+			}
+		} else {
+			printShortTextReport(report)
+			return nil
+		}
 
-	if !context.Bool("json") {
-		printTextReport(report)
-		return nil
-	}
+	} else {
+		archiveList, err := newArchiveList(repositoryPath, *archiveInfo)
+		if err != nil {
+			return err
+		}
 
-	err = printJsonReport(report)
-	if err != nil {
-		return err
+		stats := aggregateStats(archiveList)
+		report := newLongReport(repositoryName, *repositoryInfo, *archiveInfo, stats)
+
+		if context.Bool("json") {
+			err = printLongJsonReport(report)
+			if err != nil {
+				return err
+			}
+		} else {
+			printLongTextReport(report)
+			return nil
+		}
 	}
 
 	return nil
@@ -238,12 +262,28 @@ func newArchiveList(repositoryPath string, archiveInfo BorgArchiveInfo) ([]BorgA
 	return files, nil
 }
 
-func newReport(repositoryName string, repositoryInfo BorgRepositoryInfo, latestArchiveInfo BorgArchiveInfo, stats BorgArchiveStats) Report {
-	report := Report{
+func newShortReport(
+	repositoryName string,
+	repositoryInfo BorgRepositoryInfo,
+	latestArchiveInfo BorgArchiveInfo,
+) ShortReport {
+	report := ShortReport{
 		RepositoryName:         repositoryName,
 		TotalSizeBytes:         repositoryInfo.SizeBytes,
 		LatestArchiveName:      latestArchiveInfo.Name,
 		LatestArchiveCreatedAt: latestArchiveInfo.CreatedAt,
+	}
+	return report
+}
+
+func newLongReport(
+	repositoryName string,
+	repositoryInfo BorgRepositoryInfo,
+	latestArchiveInfo BorgArchiveInfo,
+	stats BorgArchiveStats,
+) LongReport {
+	report := LongReport{
+		ShortReport: newShortReport(repositoryName, repositoryInfo, latestArchiveInfo),
 	}
 
 	var sizeBytesByDir []DirectorySizeBytes
@@ -294,11 +334,15 @@ func aggregateStats(filesList []BorgArchiveFile) BorgArchiveStats {
 	}
 }
 
-func printTextReport(report Report) {
+func printShortTextReport(report ShortReport) {
 	fmt.Printf("Repository: %s\n", report.RepositoryName)
 	fmt.Printf("Total size: %s\n", humanize.Bytes(report.TotalSizeBytes))
 	fmt.Printf("Latest archive name: %s\n", report.LatestArchiveName)
 	fmt.Printf("Latest archive created at: %s\n", humanize.Time(report.LatestArchiveCreatedAt))
+}
+
+func printLongTextReport(report LongReport) {
+	printShortTextReport(report.ShortReport)
 
 	fmt.Println()
 	fmt.Println("Files count by directory (the last archive only):")
@@ -313,7 +357,16 @@ func printTextReport(report Report) {
 	}
 }
 
-func printJsonReport(report Report) error {
+func printShortJsonReport(report ShortReport) error {
+	b, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
+}
+
+func printLongJsonReport(report LongReport) error {
 	b, err := json.Marshal(report)
 	if err != nil {
 		return err
